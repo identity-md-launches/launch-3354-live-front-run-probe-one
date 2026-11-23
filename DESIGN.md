@@ -59,8 +59,10 @@ measured the rendered text pairs and found none below 4.5:1): text on bg 16.41:1
 | `--text-sm` | 0.875rem / 14px | 1.5 (1.4 for hints and errors) | Field labels, hints, errors, stat labels, chart caption, axis, legend, footer |
 
 Numbers in inputs, stat values and the chart axis use `font-variant-numeric: tabular-nums`.
-Descriptions use `text-wrap: pretty` and a 60ch measure; stat values use `overflow-wrap: anywhere`
-so a long amount wraps instead of clipping. Short labels and button text use `white-space: nowrap`.
+Descriptions use `text-wrap: pretty` and a 60ch measure. Stat values, field labels, the verdict
+heading, the verdict sentence and chart legend items use `overflow-wrap: anywhere`, so a long
+amount or a 12-character token name wraps inside its own cell instead of spilling into the
+neighbouring field or past the result surface. Short labels and button text use `white-space: nowrap`.
 
 ## Layout
 
@@ -75,8 +77,9 @@ so a long amount wraps instead of clipping. Short labels and button text use `wh
 - `.preset-row`: `repeat(auto-fit, minmax(5.5rem, 1fr))`, three equal buttons in one row at 320.
 - `.stats`: `repeat(auto-fit, minmax(min(100%, 9rem), 1fr))`, one column at 320, two at 390, three
   on desktop.
-- First screen at 390×844: header, headline, lede, example pools, all six inputs and the verdict
-  heading with its sentence. Verified in Chromium screenshots at 320, 390, 768 and 1440 with no
+- First screen at 390×844: header, headline, the scope lede (constant-product pool, such as
+  Uniswap v2), example pools, all six inputs and the verdict heading; the verdict sentence follows
+  just below the fold. Verified in Chromium screenshots at 320, 390, 768 and 1440 with no
   horizontal scroll.
 
 ## Elevation & Depth
@@ -93,7 +96,7 @@ surfaces, so no surface has both a border and a shadow and no card sits inside a
 ## Components
 
 - **Button** (`.btn`, `src/styles.css`): 44px min height, 8px radius, 600 weight, nowrap.
-  `.btn--primary` (filled accent; one per view: "Use 0.03% slippage"), `.btn--secondary`
+  `.btn--primary` (filled accent; one per view: "Use 0.0347% slippage"), `.btn--secondary`
   (white with control border: "Copy link to this probe"), `.btn--choice` (example pools, toggle
   via `aria-pressed`; pressed = subtle accent fill, 2px accent border, 600 weight). Press feedback
   `scale: 0.96` and colour transitions of 150ms `--ease-out`, only under
@@ -102,16 +105,34 @@ surfaces, so no surface has both a border and a shadow and no card sits inside a
   `inputmode="decimal"`, optional hint, live validation from `RULES` in `src/state.ts`. Invalid:
   `aria-invalid="true"`, 2px danger border, error text in danger linked by `aria-describedby`;
   messages say how to fix ("Enter a pool balance above 0").
+  Numbers are read in the browser's locale (`parseNumber`/`numberLocale`): the locale decimal
+  separator is the decimal point, thousands separators are removed only where they group digits
+  correctly, and a dot that cannot group thousands is read as a decimal. Anything else, such as
+  `0,5` in en-US, gets "Use a number like 1,234.5" (or `1.234,5` in de-DE). Links always carry
+  the locale-independent number (`slip=0.5`) and restore numbers whole; only token names are
+  limited, to 12 characters (`TOKEN_MAX`).
 - **TextField**: same shape, for renaming tokens, inside a native `<details>` ("Rename tokens").
 - **Result** (`.result`): verdict `h2` (`.verdict--exposed` / `.verdict--safe`, with a 24px
   2px-stroke icon), `.verdict-line`, `.stats` (`<dl>` of `Stat`), `.advice`, `ProfitChart`, `.share`.
   A visually hidden `role="status"` announces the verdict; `.share-status` is a second status
-  region for the copy result. Invalid input state: "Waiting for valid numbers".
+  region for the copy result ("Copying link…", then "Link copied…" or, if the form changed while
+  the clipboard write was pending, "Copied a link for the previous inputs. Copy again to share
+  these numbers."). Invalid input state: "Waiting for valid numbers".
+  Numbers in the verdict: your slippage exactly as entered (`percentExact`); the modeled
+  break-even to three significant digits, labelled "about" (`percentApprox`); the offered setting
+  is the break-even rounded down to three significant digits (`floorSig3`), offered for any
+  exposed swap. A safe swap reads "At this slippage, the bot does not profit after costs."
 - **ProfitChart** (`src/ProfitChart.tsx`): SVG, `role="img"` with a summary `aria-label`; accent
   profit line, danger-subtle area where profit is above zero, solid text-colour line for your
-  slippage, dashed safe-colour line at break-even, axis labels and a text legend in HTML.
+  slippage, dashed safe-colour line at break-even, axis labels and a text legend in HTML. The
+  exact current setting is added to the samples, and the dot sits at (your slippage, the verdict's
+  net profit), so line, dot and verdict agree. The summary reports the highest sampled net, or
+  "No positive bot profit in this range" when none is positive; the shaded area and its legend
+  key appear only when some profit is positive.
 - **Header / footer**: brand (favicon mark + name, 600) at the leading edge, "How it works" anchor
-  link at the trailing edge; footer one secondary-colour line.
+  link at the trailing edge. With JavaScript the link scrolls to and focuses the help heading
+  (`tabIndex={-1}`, no focus ring as it is not a control) and keeps the saved probe in the
+  address instead of replacing it with `#how`. Footer: one secondary-colour line.
 
 ## Do's and Don'ts
 

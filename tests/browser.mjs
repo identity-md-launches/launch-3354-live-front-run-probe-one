@@ -40,6 +40,7 @@ check("verdict starts on the first 390x844 screen", h && h.y + 30 < 844, `top ${
 
 await page.getByRole("button", { name: "Deep" }).click();
 check("Deep preset: not worth attacking", /^Not worth attacking at 0\.5% slippage/.test(await verdict()), await verdict());
+check("Deep chart: summary has no false peak, no shaded key", /No positive bot profit in this range\. Highest modeled net: -0\.005 ETH\./.test(await page.locator(".chart-plot").getAttribute("aria-label")) && (await page.getByText("Shaded: the bot profits").count()) === 0 && (await page.locator(".chart-profit-zone").count()) === 0, await page.locator(".chart-plot").getAttribute("aria-label"));
 check("Deep preset: advice says no slippage pays", await page.getByText("No sandwich pays on this pool at any slippage up to 50%.").isVisible());
 check("Deep preset pressed, Mid-size released", (await page.getByRole("button", { name: "Deep" }).getAttribute("aria-pressed")) === "true" && (await page.getByRole("button", { name: "Mid-size" }).getAttribute("aria-pressed")) === "false");
 
@@ -47,12 +48,28 @@ await page.getByRole("button", { name: "Thin" }).click();
 check("Thin preset: exposed", /^Exposed/.test(await verdict()), await verdict());
 
 await page.getByRole("button", { name: "Mid-size" }).click();
-await page.getByRole("button", { name: /^Use 0\.03% slippage$/ }).click();
-check("Use suggested slippage sets the field", (await field("Slippage (%)").inputValue()) === "0.03", await field("Slippage (%)").inputValue());
-check("suggested slippage makes the swap safe", /^Not worth attacking at 0\.03% slippage/.test(await verdict()), await verdict());
+check("verdict line names what the bot spends and buys", /^A bot could spend 2\.55 ETH to buy USDC ahead of you, then sell it back\. You receive 293\.25 USDC less\.$/.test(await page.locator(".verdict-line").innerText()), await page.locator(".verdict-line").innerText());
+check("advice gives the approximate break-even", /break-even is about 0\.0348%/.test(await page.locator(".advice").innerText()), await page.locator(".advice").innerText());
+await page.getByRole("button", { name: /^Use 0\.0347% slippage$/ }).click();
+check("Use suggested slippage sets the field", (await field("Slippage (%)").inputValue()) === "0.0347", await field("Slippage (%)").inputValue());
+check("suggested slippage makes the swap safe", /^Not worth attacking at 0\.0347% slippage/.test(await verdict()), await verdict());
 check("focus moves to the slippage field", await field("Slippage (%)").evaluate((el) => el === document.activeElement));
 check("presets released after editing", (await page.locator('[aria-pressed="true"]').count()) === 0);
 
+await field("Slippage (%)").fill("0.032");
+check("0.032% below break-even: verdict shows it as typed", /^Not worth attacking at 0\.032% slippage/.test(await verdict()), await verdict());
+check("safe advice does not tell the visitor to tighten", /^At this slippage, the bot does not profit after costs\. The modeled break-even is about 0\.0348%\.$/.test(await page.locator(".advice").innerText()), await page.locator(".advice").innerText());
+check("legend shows the exact setting and the approximate break-even", /Your slippage, 0\.032%/.test(await page.locator(".chart-legend").innerText()) && /Break-even, about 0\.0348%/.test(await page.locator(".chart-legend").innerText()), await page.locator(".chart-legend").innerText());
+const geo = await page.evaluate(() => ({ line: +document.querySelector(".chart-current").getAttribute("x1"), cx: +document.querySelector(".chart-dot").getAttribute("cx"), cy: +document.querySelector(".chart-dot").getAttribute("cy"), zero: +document.querySelector(".chart-zero").getAttribute("y1") }));
+check("chart dot sits on the marker line, below zero", Math.abs(geo.line - geo.cx) < 0.01 && geo.cy > geo.zero, JSON.stringify(geo));
+await field("Slippage (%)").fill("1");
+await field("Bot cost (ETH)").fill("0.00001");
+check("tiny bot cost still offers a tighter setting", (await page.getByRole("button", { name: /^Use [\d.]+% slippage$/ }).count()) === 1, await page.locator(".advice").innerText());
+await field("Bot cost (ETH)").fill("0");
+check("zero bot cost still offers a tighter setting", (await page.getByRole("button", { name: /^Use [\d.]+% slippage$/ }).count()) === 1, await page.locator(".advice").innerText());
+await field("Bot cost (ETH)").fill("0.003");
+await field("Slippage (%)").fill("0,5");
+check("a decimal comma in en-US is flagged with an example", (await field("Slippage (%)").getAttribute("aria-invalid")) === "true" && (await page.getByText("Use a number like 1,234.5").count()) === 1);
 await field("Slippage (%)").fill("3");
 check("typing 3% slippage updates live", /^Exposed/.test(await verdict()), await verdict());
 
@@ -87,12 +104,74 @@ check("shared link restores the fields", (await p2.getByLabel("You sell (WBTC)",
 check("shared link restores the verdict", /WBTC/.test(await p2.locator("#result-title").innerText()));
 await p2.close();
 
+await page.waitForTimeout(400);
+const hashBefore = await page.evaluate(() => location.hash);
 await page.getByRole("link", { name: "How it works" }).click();
-await page.waitForTimeout(200);
+await page.waitForTimeout(800);
+check("How it works keeps the saved probe in the address", (await page.evaluate(() => location.hash)) === hashBefore && hashBefore.includes("a=WBTC"), hashBefore);
+check("How it works moves focus to the help heading", await page.evaluate(() => document.activeElement?.id === "how-title"));
 const howTop = await page.locator("#how-title").boundingBox();
 const atEnd = await page.evaluate(() => Math.abs(window.scrollY + innerHeight - document.documentElement.scrollHeight) < 2);
 check("How it works link brings the section into view", howTop && howTop.y >= 0 && (howTop.y < 200 || atEnd), `top ${howTop?.y}, scrolled to end ${atEnd}`);
 check("fields survive the anchor jump", (await page.getByLabel("Token you sell", { exact: true }).inputValue()) === "WBTC");
+await page.reload();
+check("fields survive a reload after reading the help", (await page.getByLabel("Token you sell", { exact: true }).inputValue()) === "WBTC");
+
+// A long numeric value round-trips through a link
+await page.goto(base + "#sell=000000000000000000000000000000000000000042");
+await page.reload();
+check("long numeric value restored whole", (await field("You sell (ETH)").inputValue()) === "000000000000000000000000000000000000000042" && /^Exposed/.test(await verdict()), await verdict());
+
+// A copy that finishes after an edit names the previous inputs
+await page.goto("about:blank");
+await page.goto(base);
+await field("You sell (ETH)").fill("42");
+await page.evaluate(() => Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText(url) { window.reviewCopied = url; return new Promise((r) => { window.finishReviewCopy = r; }); } } }));
+await page.getByRole("button", { name: "Copy link to this probe" }).click();
+check("pending copy says Copying link…", (await page.locator(".share-status").innerText()) === "Copying link…");
+await field("You sell (ETH)").fill("43");
+await page.evaluate(() => window.finishReviewCopy());
+await page.waitForTimeout(50);
+check("late copy names the previous inputs", (await page.locator(".share-status").innerText()) === "Copied a link for the previous inputs. Copy again to share these numbers." && (await page.evaluate(() => window.reviewCopied)).includes("sell=42"));
+
+// de-DE: a decimal comma is a decimal
+{
+  const de = await browser.newContext({ locale: "de-DE", viewport: { width: 390, height: 844 } });
+  const dp = await de.newPage();
+  await dp.goto(base);
+  await dp.getByLabel("Slippage (%)", { exact: true }).fill("0,5");
+  check("de-DE: 0,5 reads as 0.5%", (await dp.getByLabel("Slippage (%)", { exact: true }).getAttribute("aria-invalid")) === null && /Your slippage, 0\.5%/.test(await dp.locator(".chart-legend").innerText()), await dp.locator(".chart-legend").innerText());
+  await dp.waitForTimeout(400);
+  check("de-DE: the address carries 0.5, not 0,5", /slip=0\.5(&|$)/.test(await dp.evaluate(() => location.hash)), await dp.evaluate(() => location.hash));
+  await de.close();
+}
+
+// Wide token names wrap inside their cells at 320
+{
+  await page.setViewportSize({ width: 320, height: 700 });
+  await page.goto("about:blank");
+  await page.goto(base);
+  await page.getByText("Rename tokens").click();
+  await field("Token you sell").fill("WWWWWWWWWWWW");
+  await field("Token you buy").fill("WWWWWWWWWWWW");
+  const r = await page.evaluate(() => {
+    const over = document.documentElement.scrollWidth - document.documentElement.clientWidth;
+    const labels = [...document.querySelectorAll(".probe-form > .fields .field label")].map((l) => l.getBoundingClientRect());
+    let overlap = 0;
+    for (let i = 0; i < labels.length; i++) for (let j = i + 1; j < labels.length; j++) {
+      const a = labels[i], b = labels[j];
+      if (a.left < b.right - 0.5 && b.left < a.right - 0.5 && a.top < b.bottom - 0.5 && b.top < a.bottom - 0.5) overlap++;
+    }
+    const card = document.querySelector(".result").getBoundingClientRect();
+    const spill = [...document.querySelectorAll(".result *")].filter((el) => { const b = el.getBoundingClientRect(); return b.width && b.right > card.right + 0.5; }).length;
+    const inputs = [...document.querySelectorAll("input")].filter((el) => el.getBoundingClientRect().right > innerWidth + 0.5).length;
+    const clipped = [...document.querySelectorAll(".field label, .verdict, .verdict-line, .chart-legend li")].filter((el) => { const r = document.createRange(); r.selectNodeContents(el); const t = r.getBoundingClientRect(), b = el.getBoundingClientRect(); return t.right > b.right + 0.5 || t.left < b.left - 0.5; }).length;
+    const cellsOut = [...document.querySelectorAll(".field label")].filter((l) => l.getBoundingClientRect().right > l.parentElement.getBoundingClientRect().right + 0.5).length;
+    return { over, overlap, spill, inputs, clipped, cellsOut };
+  });
+  check("12-character token names: no overlap or overflow at 320", r.over <= 0 && r.overlap === 0 && r.spill === 0 && r.inputs === 0 && r.clipped === 0 && r.cellsOut === 0, JSON.stringify(r));
+  await page.screenshot({ path: join(SHOTS, "320-wide-tokens.png"), fullPage: true });
+}
 
 // Keyboard: tab order and a visible focus outline
 await page.goto(base);

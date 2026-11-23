@@ -21,7 +21,7 @@ npm run dev            # development server with hot reload
 npm run build          # typecheck (tsc --noEmit), then the production export into dist/
 npm run preview        # serve the built dist/ locally
 npm run typecheck      # typecheck only
-npm test               # unit tests for the sandwich model (node --test, no extra deps)
+npm test               # unit tests: sandwich model, number parsing, links, rounding (node --test)
 npm run test:browser   # browser interaction test of dist/ (needs Playwright, see below)
 ```
 
@@ -51,29 +51,66 @@ Screenshots go to `$SHOTS_DIR` (default: the OS temp directory).
 | Path | What it holds |
 | --- | --- |
 | `src/probe.ts` | The model: constant-product swap, sandwich, best front-run search, break-even slippage, profit curve |
-| `src/state.ts` | Form fields, example pools, validation rules and messages, URL-hash encoding |
+| `src/state.ts` | Form fields, example pools, locale-aware number parsing, validation rules and messages, URL-hash encoding |
 | `src/format.ts` | Number and percentage formatting |
 | `src/App.tsx` | The page: header, form, result, "How the probe works" |
 | `src/ProfitChart.tsx` | SVG chart of bot profit after costs across slippage tolerances |
 | `src/styles.css` | Tokens and all styles (see `DESIGN.md`) |
 | `public/` | `favicon.svg` and the 1200×630 share image `og.png` |
-| `tests/` | `probe.test.ts` (unit) and `browser.mjs` (interaction) |
+| `tests/` | `probe.test.ts`, `state.test.ts` (unit) and `browser.mjs` (interaction) |
 | `artifacts/validation.md` | Checks run, design review coverage, findings, limitations |
 
 ## Checks run for this delivery
 
-Run on the final source on 2026-11-23; full detail in `artifacts/validation.md`.
+Run on the final source on 2026-11-23, after the review revision described below.
 
 | Command | Result |
 | --- | --- |
 | `npm run typecheck` | passed, no errors |
-| `npm test` | 7 passed, 0 failed |
+| `npm test` | 12 passed, 0 failed (7 model, 5 parsing/links/rounding) |
 | `npm run build` | passed; `dist/index.html`, one JS and one CSS bundle, `favicon.svg`, `og.png` |
-| `npm run test:browser` (Chromium 1248 via Playwright 1.64.0) | 35 passed, 0 failed |
-| `node .imd/reads/skills/design-critic/scripts/taste.mjs --out test/scratch/taste` | 16 of 16 checks passed |
+| `npm run test:browser` (Chromium 1248 via Playwright 1.64.1) | 54 passed, 0 failed |
+| `node .imd/reads/skills/design-critic/scripts/taste.mjs --out test/scratch/taste` | 16 of 16 checks passed (render, layout, targets, contrast, casing, tracking, eyebrows, type-sizes, type-faces, glyphs, slogans, repetition, copy-budget, chrome, motion, share) |
 
-Not performed: WebKit/Safari (no WebKit build on the machine), a real screen reader, native
-200% browser zoom, physical phones. See `artifacts/validation.md`.
+The 390×844 screenshot shows the header, headline, scope lede, example pools, all six inputs and
+the verdict heading on the first screen.
+
+Not performed: WebKit/Safari (the WebKit build on this machine does not launch with this
+Playwright version), a real screen reader, native 200% browser zoom, physical phones.
+
+### Review revision
+
+Each reported defect was reproduced in Chromium against the previous export before it was fixed,
+and the browser test now covers it:
+
+- **Long token names at 320px** (`src/styles.css`): `overflow-wrap: anywhere` on `.field label`,
+  `.verdict`, `.verdict-line` and legend items. Test: with two 12-character names, no label
+  extends past its cell (4 did with the old rule), no overlap, no horizontal scroll.
+- **Break-even and advice** (`src/App.tsx`, `src/format.ts`): verdict and legend show your slippage
+  as entered (0.032%); break-even is "about 0.0348%"; the offered value is rounded down to three
+  significant digits (0.0347%) and offered for every exposed swap; a safe swap reads "At this
+  slippage, the bot does not profit after costs."
+- **Decimal comma** (`src/state.ts`): locale-aware parsing; `0,5` is 0.5 in de-DE and an error
+  with a format example in en-US; links carry `slip=0.5`.
+- **How it works** keeps the saved probe in the address and focuses the help heading.
+- **Links** restore numbers whole (only token names are cut to 12 characters) and are written in
+  canonical form.
+- **Copy** shows "Copying link…" and, if the form changed during the write, says the link holds
+  the previous inputs.
+- **Verdict sentence**: "A bot could spend 2.55 ETH to buy USDC ahead of you, then sell it back."
+- **Chart**: the dot sits on the current-slippage line at the verdict's net profit; the summary
+  says "No positive bot profit in this range" when that is true; the shaded key shows only with
+  a shaded area.
+- **Lede** states the scope (one constant-product pool, such as Uniswap v2); presets read "Example
+  pools with sample balances".
+
+Better Interface review of this revision: writing (verdict direction, scope stated before use,
+status messages that name what was copied), accessibility (chart name matches the curve, focus
+moved to the help heading, format errors tied by `aria-describedby`), layout (no overflow with
+the longest allowed names), typography (no new sizes; wrapping rules), colors (unchanged) and UI
+(the primary action shown whenever a tighter setting exists) were rechecked. One remaining
+limitation: with a zero or near-zero bot cost the break-even can be a tiny figure such as
+0.00000000391%. That is the model's honest answer, but it is not a practical setting.
 
 ## Ignore file
 

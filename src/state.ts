@@ -51,16 +51,63 @@ export const RULES: Record<NumericField, { min: number; max: number; minExclusiv
   attackerCost: { min: 0, max: 1e15, minExclusive: false, message: "Enter 0 or more" },
 };
 
-export function parseNumber(raw: string): number {
-  const cleaned = raw.replace(/[,_\s]/g, "");
-  if (cleaned === "" || !/^\d*\.?\d*(e[+-]?\d+)?$/i.test(cleaned)) return Number.NaN;
-  return Number(cleaned);
+/** Separators of the visitor's number locale, e.g. de-DE writes 1.234,5. */
+export interface NumberLocale { decimal: "." | ","; group: string }
+
+export function numberLocale(tag?: string): NumberLocale {
+  const lang = tag ?? (typeof navigator !== "undefined" ? navigator.language : undefined) ?? "en-US";
+  let parts: Intl.NumberFormatPart[] = [];
+  try { parts = new Intl.NumberFormat(lang).formatToParts(1234.5); } catch { /* unknown tag */ }
+  const decimal = parts.find((p) => p.type === "decimal")?.value === "," ? "," : ".";
+  const group = parts.find((p) => p.type === "group")?.value ?? (decimal === "," ? "." : ",");
+  return { decimal, group };
 }
 
-export function fieldError(name: NumericField, raw: string): string | null {
-  const n = parseNumber(raw);
+/** "1,234.5" for en-US, "1.234,5" for de-DE: the example a format error shows. */
+export function formatExample(loc: NumberLocale = numberLocale()): string {
+  const g = /\s/.test(loc.group) ? " " : loc.group;
+  return `1${g}234${loc.decimal}5`;
+}
+
+// Whole-number part with separators in the right places: 1 to 3 digits (not a leading 0), then groups of 3.
+const grouped = (sep: string) => new RegExp(`^[1-9]\\d{0,2}(?:${sep === "." ? "\\." : sep}\\d{3})+$`);
+const PLAIN = /^(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/i;
+
+/**
+ * Reads a number as typed in the visitor's locale. The locale's decimal separator is the decimal
+ * point; its grouping separator is removed only where it groups thousands. A dot is also read as
+ * the decimal point when it cannot be a thousands separator ("0.5" in de-DE), because the example
+ * pools and suggestions are written that way. Anything else, such as "0,5" in en-US, is NaN.
+ */
+export function parseNumber(raw: string, loc: NumberLocale = numberLocale()): number {
+  // Spaces (and no-break spaces) only ever group digits.
+  const s = raw.replace(/[\s\u00a0\u202f]/g, "");
+  if (s === "") return Number.NaN;
+  if (PLAIN.test(s)) {
+    // A lone dot: the decimal point, unless this locale groups with dots and it groups correctly.
+    if (loc.decimal === "," && grouped(".").test(s)) return Number(s.replace(/\./g, ""));
+    return Number(s);
+  }
+  const groupSep = loc.decimal === "," ? "." : ",";
+  const [whole, frac, ...rest] = s.split(loc.decimal);
+  if (rest.length) return Number.NaN;
+  if (frac !== undefined && !/^\d*(e[+-]?\d+)?$/i.test(frac)) return Number.NaN;
+  let digits: string;
+  if (/^\d*$/.test(whole)) digits = whole;
+  else if (grouped(groupSep).test(whole)) digits = whole.split(groupSep).join("");
+  else return Number.NaN;
+  const canonical = frac === undefined ? digits : `${digits || "0"}.${frac}`;
+  return PLAIN.test(canonical) ? Number(canonical) : Number.NaN;
+}
+
+export function fieldError(name: NumericField, raw: string, loc: NumberLocale = numberLocale()): string | null {
+  const n = parseNumber(raw, loc);
   const rule = RULES[name];
-  if (!Number.isFinite(n)) return rule.message;
+  const stripped = raw.replace(/[\s\u00a0\u202f]/g, "");
+  if (!Number.isFinite(n)) {
+    // Separators that do not fit the locale get a format example, not a range message.
+    return /^[\d.,]+$/.test(stripped) && /\d/.test(stripped) ? `Use a number like ${formatExample(loc)}` : rule.message;
+  }
   if (rule.minExclusive ? n <= rule.min : n < rule.min) return rule.message;
   if (n > rule.max) return rule.message;
   return null;
@@ -92,10 +139,24 @@ const KEYS: Record<keyof Fields, string> = {
   tokenOut: "b",
 };
 
-export function toHash(f: Fields): string {
+const isNumeric = (k: keyof Fields): k is NumericField => (NUMERIC as string[]).includes(k);
+
+/**
+ * The form as a URL fragment. Valid numbers are written in one locale-independent form
+ * ("0.5", never "0,5"), so the recipient's browser reads the same value. Invalid text is kept as typed.
+ */
+export function toHash(f: Fields, loc: NumberLocale = numberLocale()): string {
   const q = new URLSearchParams();
-  for (const k of Object.keys(KEYS) as (keyof Fields)[]) q.set(KEYS[k], f[k]);
+  for (const k of Object.keys(KEYS) as (keyof Fields)[]) {
+    const v = f[k];
+    q.set(KEYS[k], isNumeric(k) && !fieldError(k, v, loc) ? String(parseNumber(v, loc)) : v);
+  }
   return `#${q.toString()}`;
+}
+
+/** True when the fragment holds saved probe inputs rather than a section link like #how. */
+export function hashHasProbe(hash: string): boolean {
+  return fromHash(hash) !== null;
 }
 
 /** Fields from a shared link; anything missing falls back to the default pool. */
@@ -107,10 +168,13 @@ export function fromHash(hash: string): Fields | null {
   let found = false;
   for (const k of Object.keys(KEYS) as (keyof Fields)[]) {
     const v = q.get(KEYS[k]);
-    if (v !== null) { out[k] = v.slice(0, 40); found = true; }
+    // Numbers are restored whole and validated by the form; only token names have a length limit.
+    if (v !== null) { out[k] = isNumeric(k) ? v : v.slice(0, TOKEN_MAX); found = true; }
   }
   return found ? out : null;
 }
+
+export const TOKEN_MAX = 12;
 
 export function matchPreset(f: Fields): string | null {
   return PRESETS.find((p) => (Object.keys(p.fields) as (keyof Fields)[]).every((k) => p.fields[k] === f[k]))?.id ?? null;

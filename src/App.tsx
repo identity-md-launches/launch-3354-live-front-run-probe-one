@@ -1,9 +1,9 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { probe, profitCurve, safeSlippage } from "./probe.ts";
-import { amount, percent } from "./format.ts";
+import { amount, floorSig3, percent, percentApprox, percentExact, plainDecimal } from "./format.ts";
 import {
   DEFAULT_FIELDS, PRESETS, type Fields, type NumericField,
-  fieldError, fromHash, matchPreset, toHash, toInput, tokenLabel,
+  fieldError, fromHash, matchPreset, numberLocale, toHash, toInput, tokenLabel, TOKEN_MAX,
 } from "./state.ts";
 import { ProfitChart } from "./ProfitChart.tsx";
 
@@ -17,6 +17,10 @@ export function App() {
   const [fields, setFields] = useState<Fields>(initialFields);
   const [copyStatus, setCopyStatus] = useState("");
   const slippageRef = useRef<HTMLInputElement>(null);
+  const howRef = useRef<HTMLHeadingElement>(null);
+  // The latest form, read when a slow clipboard write finishes.
+  const fieldsRef = useRef(fields);
+  fieldsRef.current = fields;
 
   const tokenIn = tokenLabel(fields.tokenIn, "token A");
   const tokenOut = tokenLabel(fields.tokenOut, "token B");
@@ -47,27 +51,47 @@ export function App() {
   const announcement = result && input
     ? result.exposed
       ? `Exposed. A sandwich nets the bot ${amount(result.netProfit)} ${tokenIn}.`
-      : `Not worth attacking at ${percent(input.slippage)} slippage.`
+      : `Not worth attacking at ${percentExact(input.slippage)} slippage.`
     : "Waiting for valid numbers.";
 
-  // Round the break-even down to 0.01% so the suggested value stays on the safe side.
-  const suggested = safe !== null && safe < MAX_SAFE ? Math.floor(safe * 10000) / 10000 : null;
+  // The modeled break-even (shown as approximate), and the setting the page offers: the break-even
+  // rounded down to three significant digits in percent, so applying it stays on the safe side.
+  const breakEven = safe !== null && safe < MAX_SAFE ? safe : null;
+  const suggestedPct = breakEven === null ? null : floorSig3(breakEven * 100);
+  const suggested = suggestedPct === null ? null : suggestedPct / 100;
 
   const useSuggested = () => {
-    if (suggested === null) return;
-    set("slippage", String(Number((suggested * 100).toFixed(2))));
+    if (suggestedPct === null) return;
+    set("slippage", plainDecimal(suggestedPct).replace(".", numberLocale().decimal));
     slippageRef.current?.focus();
   };
 
   const copyLink = async () => {
-    const url = `${window.location.origin}${window.location.pathname}${window.location.search}${toHash(fields)}`;
-    history.replaceState(null, "", toHash(fields));
+    const hash = toHash(fields);
+    const url = `${window.location.origin}${window.location.pathname}${window.location.search}${hash}`;
+    history.replaceState(null, "", hash);
+    setCopyStatus("Copying link…");
     try {
       await navigator.clipboard.writeText(url);
-      setCopyStatus("Link copied. It opens this probe with these numbers.");
+      // The form may have changed while the write was pending: say which numbers were copied.
+      setCopyStatus(toHash(fieldsRef.current) === hash
+        ? "Link copied. It opens this probe with these numbers."
+        : "Copied a link for the previous inputs. Copy again to share these numbers.");
     } catch {
-      setCopyStatus("Unable to copy here. The address bar now holds the link to this probe.");
+      setCopyStatus(toHash(fieldsRef.current) === hash
+        ? "Unable to copy here. The address bar now holds the link to this probe."
+        : "Unable to copy here. Copy again to share these numbers.");
     }
+  };
+
+  // The fragment holds the saved probe, so jump to the help without replacing it with #how.
+  // Without JavaScript the link still works as a plain #how anchor.
+  const openHelp = (e: React.MouseEvent<HTMLAnchorElement>) => {
+    e.preventDefault();
+    history.replaceState(null, "", toHash(fields));
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    howRef.current?.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
+    howRef.current?.focus({ preventScroll: true });
   };
 
   return (
@@ -77,21 +101,21 @@ export function App() {
           <img src="./favicon.svg" alt="" width="24" height="24" />
           Front-run probe
         </span>
-        <a className="header-link" href="#how">How it works</a>
+        <a className="header-link" href="#how" onClick={openHelp}>How it works</a>
       </header>
 
       <main id="main" className="page">
         <div className="intro">
           <h1>Can your swap be sandwiched?</h1>
           <p className="lede">
-            A calculator for what a sandwich bot can take from one swap, and the slippage that stops it.
+            Estimate sandwich risk and break-even slippage for one constant-product pool, such as Uniswap v2.
           </p>
         </div>
 
         <div className="workspace">
           <form className="probe-form" onSubmit={(e) => e.preventDefault()} noValidate aria-label="Swap to probe">
             <fieldset className="presets">
-              <legend>Example pools</legend>
+              <legend>Example pools with sample balances</legend>
               <div className="preset-row">
                 {PRESETS.map((p) => (
                   <button
@@ -131,13 +155,15 @@ export function App() {
               <>
                 <h2 id="result-title" className={`verdict ${result.exposed ? "verdict--exposed" : "verdict--safe"}`}>
                   <VerdictIcon exposed={result.exposed} />
-                  {result.exposed
-                    ? `Exposed: a sandwich nets the bot ${amount(result.netProfit)} ${tokenIn}`
-                    : `Not worth attacking at ${percent(input.slippage)} slippage`}
+                  <span>
+                    {result.exposed
+                      ? `Exposed: a sandwich nets the bot ${amount(result.netProfit)} ${tokenIn}`
+                      : `Not worth attacking at ${percentExact(input.slippage)} slippage`}
+                  </span>
                 </h2>
                 <p className="verdict-line">
                   {result.exposed
-                    ? `A bot can buy ${amount(result.frontRun)} ${tokenIn} ahead of you and sell right after. You receive ${amount(result.loss)} ${tokenOut} less.`
+                    ? `A bot could spend ${amount(result.frontRun)} ${tokenIn} to buy ${tokenOut} ahead of you, then sell it back. You receive ${amount(result.loss)} ${tokenOut} less.`
                     : result.grossProfit > 0
                       ? `The best sandwich earns ${amount(result.grossProfit)} ${tokenIn}, less than the ${amount(input.attackerCost)} ${tokenIn} it costs the bot.`
                       : `No front-run makes money here: the bot pays the pool fee twice and your trade moves the price too little.`}
@@ -152,23 +178,25 @@ export function App() {
                 </dl>
 
                 <div className="advice">
-                  {suggested === null ? (
+                  {suggested === null || breakEven === null ? (
                     <p>No sandwich pays on this pool at any slippage up to {percent(MAX_SAFE)}.</p>
-                  ) : suggested <= 0 ? (
-                    <p>Even 0.01% slippage leaves room for a sandwich that pays. Split the swap into smaller trades or send it privately.</p>
                   ) : result.exposed ? (
                     <>
-                      <p>At {percent(suggested)} slippage or less, the sandwich loses the bot money. Set it too tight and the swap can fail if the price moves.</p>
+                      <p>
+                        {suggested > 0
+                          ? `The modeled break-even is about ${percentApprox(breakEven)}. At ${percentExact(suggested)} slippage or less, the sandwich loses the bot money. Set it too tight and the swap can fail if the price moves.`
+                          : "Only 0% slippage stops a sandwich that pays here, and a 0% swap fails if the price moves at all. Splitting the swap or sending it privately also helps."}
+                      </p>
                       <button type="button" className="btn btn--primary" onClick={useSuggested}>
-                        Use {percent(suggested)} slippage
+                        Use {percentExact(suggested)} slippage
                       </button>
                     </>
                   ) : (
-                    <p>Stay at or below {percent(suggested)} slippage. Above that, a sandwich pays.</p>
+                    <p>At this slippage, the bot does not profit after costs. The modeled break-even is about {percentApprox(breakEven)}.</p>
                   )}
                 </div>
 
-                <ProfitChart curve={curve} current={input.slippage} safe={suggested === null ? null : safe} token={tokenIn} />
+                <ProfitChart curve={curve} current={input.slippage} currentNet={result.netProfit} safe={breakEven} token={tokenIn} />
               </>
             ) : (
               <>
@@ -185,7 +213,7 @@ export function App() {
         </div>
 
         <section id="how" className="how" aria-labelledby="how-title">
-          <h2 id="how-title">How the probe works</h2>
+          <h2 id="how-title" ref={howRef} tabIndex={-1}>How the probe works</h2>
           <ol>
             <li>It models one pool that prices with <span className="nowrap">x × y = k</span>, the rule Uniswap v2 and its forks use.</li>
             <li>A bot buys ahead of you, as much as your slippage tolerance allows. Your swap fills at the worse price, then the bot sells back into the pool.</li>
@@ -247,7 +275,7 @@ function TextField({ name, label, fields, onChange }: {
   return (
     <div className="field">
       <label htmlFor={id}>{label}</label>
-      <input id={id} name={name} type="text" maxLength={12} autoComplete="off" spellCheck={false} value={fields[name]} onChange={(e) => onChange(name, e.target.value)} />
+      <input id={id} name={name} type="text" maxLength={TOKEN_MAX} autoComplete="off" spellCheck={false} value={fields[name]} onChange={(e) => onChange(name, e.target.value)} />
     </div>
   );
 }
